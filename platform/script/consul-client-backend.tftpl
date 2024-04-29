@@ -1,0 +1,97 @@
+#!/bin/bash
+echo "Initializing instance..."
+
+# Update dependencies
+sudo yum update -y
+sudo yum install -y yum-utils
+sudo yum-config-manager --add-repo https://rpm.releases.hashicorp.com/AmazonLinux/hashicorp.repo
+sudo yum -y install consul
+sudo yum -y install iptables
+
+# export ENVOY_VERSION_STRING=1.28.1
+# curl -L https://func-e.io/install.sh | bash -s -- -b /usr/local/bin
+# func-e use $ENVOY_VERSION_STRING
+# cp ~/.func-e/versions/$ENVOY_VERSION_STRING/bin/envoy /usr/local/bin/
+# envoy --version
+
+curl -O https://bootstrap.pypa.io/get-pip.py
+python3 get-pip.py
+pip install pyopenssl
+pip install flask
+
+### Configuring DNS ###
+mkdir /etc/systemd/resolved.conf.d
+cat << EOF >> /etc/systemd/resolved.conf.d/consul.conf
+[Resolve]
+DNS=127.0.0.1
+DNSSEC=false
+Domains=~consul
+EOF
+iptables --table nat --append OUTPUT --destination localhost --protocol udp --match udp --dport 53 --jump REDIRECT --to-ports 8600
+iptables --table nat --append OUTPUT --destination localhost --protocol tcp --match tcp --dport 53 --jump REDIRECT --to-ports 8600
+systemctl restart systemd-resolved
+### Configuring DNS - END ###
+
+cat << EOF >> app.py
+from flask import Flask
+
+app = Flask(__name__)
+
+@app.route("/")
+def hello_world():
+    return "Hello from backend"
+
+if __name__ == "__main__":
+    appFlask.run(host='0.0.0.0', port=80)
+EOF
+
+cat << EOF >> /etc/systemd/system/consul.service
+[Unit]
+Description="HashiCorp Consul - A service mesh solution"
+Documentation=https://www.consul.io/
+Requires=network-online.target
+After=network-online.target
+ConditionFileNotEmpty=/etc/consul.d/consul.hcl
+
+[Service]
+User=consul
+Group=consul
+ExecStart=/usr/bin/consul agent -config-dir=/etc/consul.d/
+ExecReload=/bin/kill --signal HUP $MAINPID
+KillMode=process
+KillSignal=SIGTERM
+Restart=on-failure
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+IP_ADDR=$(ifconfig ens5 | grep "inet " | awk '{print $2}')
+cat << EOF >> /etc/consul.d/consul.hcl
+log_level      = "INFO"
+server         = false
+datacenter     = "consul-cluster"
+data_dir       = "/opt/consul/data"
+client_addr    = "0.0.0.0"
+bind_addr      = "$IP_ADDR"
+advertise_addr = "$IP_ADDR"
+retry_join     = ["provider=aws tag_key=consul-cluster-server tag_value=true"]
+EOF
+
+cat << EOF >> /etc/consul.d/service.hcl
+service {
+  name = "webapp-backend"
+  id   = "webapp-backend-01"
+  port = 80
+  tags = ["webapp-backend"]
+  connect {
+    sidecar_service {}
+  }
+}
+EOF
+
+flask run --host=0.0.0.0 --port=80 &
+systemctl enable consul
+systemctl start consul
+consul connect proxy -sidecar-for webapp-backend-01 > webapp-backend.log &

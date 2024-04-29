@@ -1,0 +1,60 @@
+#!/bin/bash
+echo "Initializing instance..."
+
+# Update dependencies
+sudo yum update -y
+sudo yum install -y yum-utils
+sudo yum-config-manager --add-repo https://rpm.releases.hashicorp.com/AmazonLinux/hashicorp.repo
+sudo yum -y install consul
+
+#curl -Lo /tmp/consul.zip https://releases.hashicorp.com/consul/1.18.0+ent/consul_1.18.0+ent_linux_amd64.zip
+#unzip /tmp/consul.zip -d /usr/bin
+
+curl -O https://bootstrap.pypa.io/get-pip.py
+python3 get-pip.py
+pip install pyopenssl
+pip install flask
+
+cat << EOF >> /etc/systemd/system/consul.service
+[Unit]
+Description="HashiCorp Consul - A service mesh solution"
+Documentation=https://www.consul.io/
+Requires=network-online.target
+After=network-online.target
+ConditionFileNotEmpty=/etc/consul.d/consul.hcl
+
+[Service]
+User=consul
+Group=consul
+ExecStart=/usr/bin/consul agent -config-dir=/etc/consul.d/
+ExecReload=/bin/kill --signal HUP $MAINPID
+KillMode=process
+KillSignal=SIGTERM
+Restart=on-failure
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+IP_ADDR=$(ifconfig ens5 | grep "inet " | awk '{print $2}')
+cat << EOF >> /etc/consul.d/consul.hcl
+log_level        = "INFO"
+server           = true
+bootstrap_expect = 3
+datacenter       = "consul-cluster"
+data_dir         = "/opt/consul/data"
+client_addr      = "0.0.0.0"
+bind_addr        = "$IP_ADDR"
+advertise_addr   = "$IP_ADDR"
+retry_join       = ["provider=aws tag_key=consul-cluster-server tag_value=true"]
+ui_config {
+  enabled = true
+}
+connect {
+  enabled = true
+}
+EOF
+
+systemctl enable consul
+systemctl start consul
