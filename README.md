@@ -18,6 +18,10 @@ consul connect proxy -sidecar-for webapp-backend-01 > webapp-backend.log &
 ```shell
 consul connect proxy -sidecar-for webapp-frontend-01 > webapp-frontend.log &
 ```
+ - To test that the proxy is working
+    ```shell
+    curl localhost:5000 # This should return "Hello from backend". 
+    ```
 
 3. To see the consul UI
 ```shell
